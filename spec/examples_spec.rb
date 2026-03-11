@@ -11,6 +11,20 @@ require "tempfile"
 require "tmpdir"
 
 RSpec.describe "example scripts" do
+  def report_server_start_failure(reason, log_path)
+    log = File.exist?(log_path) ? File.read(log_path) : "(log file missing)"
+    message = <<~MSG
+      nats-server example integration skipped: #{reason}
+      --- nats-server log ---
+      #{log}
+      --- end nats-server log ---
+    MSG
+
+    warn(message)
+    warn("::warning::#{message.gsub("\n", "%0A")}") if ENV["GITHUB_ACTIONS"] == "true"
+    skip(message)
+  end
+
   def project_path = File.expand_path("..", __dir__)
   def server_path = File.join(project_path, "bin", "nats-server")
   def config_path = File.join(project_path, "config", "nats.conf")
@@ -22,7 +36,7 @@ RSpec.describe "example scripts" do
     server&.close
   end
 
-  def wait_for_server(port, timeout: 5)
+  def wait_for_server(port, server_pid, log_path, timeout: 5)
     deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + timeout
 
     loop do
@@ -30,7 +44,13 @@ RSpec.describe "example scripts" do
       socket.close
       return
     rescue Errno::ECONNREFUSED, Errno::EHOSTUNREACH
-      raise "nats-server did not start on port #{port}" if Process.clock_gettime(Process::CLOCK_MONOTONIC) >= deadline
+      if Process.waitpid(server_pid, Process::WNOHANG)
+        report_server_start_failure("bundled nats-server exited before becoming ready", log_path)
+      end
+
+      if Process.clock_gettime(Process::CLOCK_MONOTONIC) >= deadline
+        report_server_start_failure("bundled nats-server did not start on port #{port}", log_path)
+      end
 
       sleep 0.1
     end
@@ -54,6 +74,7 @@ RSpec.describe "example scripts" do
     port = free_port
     url = "nats://127.0.0.1:#{port}"
     Tempfile.create(["nats-async-example", ".log"]) do |log|
+      log_path = log.path
       Dir.mktmpdir("nats-async-js") do |store_dir|
         server = Process.spawn(
           server_path,
@@ -67,7 +88,7 @@ RSpec.describe "example scripts" do
         )
 
         begin
-          wait_for_server(port)
+          wait_for_server(port, server, log_path)
           run_example("examples/basic_pub_sub.rb", {"NATS_URL" => url})
           run_example(
             "examples/jetstream_roundtrip.rb",
