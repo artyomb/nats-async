@@ -27,7 +27,6 @@ RSpec.describe "example scripts" do
 
   def project_path = File.expand_path("..", __dir__)
   def server_path = File.join(project_path, "bin", "nats-server")
-  def config_path = File.join(project_path, "config", "nats.conf")
 
   def free_port
     server = TCPServer.new("127.0.0.1", 0)
@@ -75,37 +74,42 @@ RSpec.describe "example scripts" do
     url = "nats://127.0.0.1:#{port}"
     Tempfile.create(["nats-async-example", ".log"]) do |log|
       log_path = log.path
-      Dir.mktmpdir("nats-async-js") do |store_dir|
-        server = Process.spawn(
-          server_path,
-          "-c", config_path,
-          "-js",
-          "-sd", store_dir,
-          "-p", port.to_s,
-          out: log,
-          err: log,
-          chdir: project_path
-        )
+      Tempfile.create(["nats-async", ".conf"]) do |config|
+        config.write("debug: true\ntrace: true\n")
+        config.flush
 
-        begin
-          wait_for_server(port, server, log_path)
-          run_example("examples/basic_pub_sub.rb", {"NATS_URL" => url})
-          run_example(
-            "examples/jetstream_roundtrip.rb",
-            {
-              "NATS_URL" => url,
-              "JS_STREAM" => "spec_stream",
-              "JS_SUBJECT" => "spec.subject",
-              "JS_CONSUMER" => "spec_consumer",
-              "JS_PAYLOAD" => "spec payload"
-            }
+        Dir.mktmpdir("nats-async-js") do |store_dir|
+          server = Process.spawn(
+            server_path,
+            "-c", config.path,
+            "-js",
+            "-sd", store_dir,
+            "-p", port.to_s,
+            out: log,
+            err: log,
+            chdir: project_path
           )
-        ensure
+
           begin
-            Process.kill("TERM", server)
-            Process.wait(server)
-          rescue Errno::ESRCH, Process::Waiter::Error
-            nil
+            wait_for_server(port, server, log_path)
+            run_example("examples/basic_pub_sub.rb", {"NATS_URL" => url})
+            run_example(
+              "examples/jetstream_roundtrip.rb",
+              {
+                "NATS_URL" => url,
+                "JS_STREAM" => "spec_stream",
+                "JS_SUBJECT" => "spec.subject",
+                "JS_CONSUMER" => "spec_consumer",
+                "JS_PAYLOAD" => "spec payload"
+              }
+            )
+          ensure
+            begin
+              Process.kill("TERM", server)
+              Process.wait(server)
+            rescue Errno::ESRCH, Process::Waiter::Error
+              nil
+            end
           end
         end
       end
