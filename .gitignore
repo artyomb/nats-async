@@ -1,0 +1,14 @@
+/.bundle/
+/coverage/
+/pkg/
+/results/
+/*.gem
+
+/.idea/
+*.iml
+
+/.DS_Store
+/.ruby-lsp/
+/.yardoc/
+/tmp/
+/untitled/
