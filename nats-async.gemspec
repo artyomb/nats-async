@@ -9,7 +9,7 @@ Gem::Specification.new do |s|
   s.description = "Lightweight async Ruby connector for NATS"
   s.authors     = ["Artem Borodkin"]
   s.email       = ["author@email.address"]
-  s.files       = Dir["{bin,config,examples,lib,spec}/**/*", ".github/workflows/*", ".rspec", ".rubocop.yml", "README.erb", "README.md", "Rakefile"]
+  s.files       = Dir["{config,examples,lib,spec}/**/*", ".github/workflows/*", ".rspec", ".rubocop.yml", "README.md", "Rakefile"]
 
   s.require_paths = ["lib"]
   s.homepage      = "https://rubygems.org/gems/nats-async"
