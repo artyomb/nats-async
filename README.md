@@ -1,6 +1,6 @@
 # Nats Async
 
-`nats-async` packages the `nats-test` prototype as a Ruby gem with the same project layout and build flow as `dry-stack`.
+`nats-async` packages the `nats-test` prototype as a Ruby gem that uses gem async.
 
 ## Installation
 
