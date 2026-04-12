@@ -21,14 +21,18 @@ gem install nats-async
 ```ruby
 require "nats-async"
 
-connector = NatsAsync::SimpleConnector.new(url: "nats://127.0.0.1:4222", verbose: false)
-connector.run(duration: 1) do |client, task|
+Async do |task|
+  client = NatsAsync::Client.new(url: "nats://127.0.0.1:4222", verbose: false)
+  client.start(task: task)
+
   client.subscribe("demo.subject") do |message|
     puts "received: #{message.data}"
-    task.stop
   end
 
   client.publish("demo.subject", "hello")
+  client.flush
+ensure
+  client&.close
 end
 ```
 
@@ -37,7 +41,7 @@ end
 Core pub/sub:
 
 ```bash
-bundle exec ruby examples/basic_pub_sub.rb
+bundle exec ruby examples/core_lifecycle.rb
 ```
 
 JetStream publish and pull:
@@ -47,6 +51,16 @@ bundle exec ruby examples/jetstream_roundtrip.rb
 ```
 
 The integration spec boots the bundled [`bin/nats-server`](bin/nats-server) and runs these examples locally.
+
+## Documentation
+
+The documentation site is an Astro/Starlight project in [`docs-site`](docs-site).
+
+```bash
+npm --prefix docs-site install
+bundle exec rake docs:dev
+npm --prefix docs-site run build
+```
 
 ## Development
 

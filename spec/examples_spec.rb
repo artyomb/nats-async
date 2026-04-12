@@ -88,7 +88,14 @@ RSpec.describe "example scripts" do
 
           begin
             wait_for_server(port, server, log_path)
-            run_example("examples/basic_pub_sub.rb", {"NATS_URL" => url})
+            run_example("examples/core_lifecycle.rb", {"NATS_URL" => url})
+            run_example("examples/queue_group.rb", {"NATS_URL" => url})
+            run_example("examples/request_reply.rb", {"NATS_URL" => url})
+            run_example("examples/headers_and_binary.rb", {"NATS_URL" => url})
+            run_example("examples/jetstream_management.rb", {"NATS_URL" => url})
+            run_example("examples/jetstream_publish.rb", {"NATS_URL" => url})
+            run_example("examples/backend_detection.rb", {"NATS_URL" => url})
+            run_example("examples/jetstream_pull_consumer.rb", {"NATS_URL" => url})
             run_example(
               "examples/jetstream_roundtrip.rb",
               {

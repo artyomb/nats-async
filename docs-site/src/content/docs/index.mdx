@@ -1,0 +1,46 @@
+---
+title: Nats Async
+description: Async Ruby client API for NATS core messaging and JetStream.
+template: splash
+hero:
+  tagline: Use NATS core messaging, headers, request/reply, JetStream management, publish acknowledgements, and pull consumers from Ruby Async tasks.
+  actions:
+    - text: Get Started
+      link: /nats-async/getting-started/
+      icon: right-arrow
+    - text: View Source
+      link: https://github.com/artyomb/nats-async
+      icon: external
+      variant: minimal
+---
+
+import { Card, CardGrid } from '@astrojs/starlight/components';
+
+## What It Covers
+
+<CardGrid stagger>
+  <Card title="Explicit Lifecycle" icon="setting">
+    Start the client inside an `Async` task, keep idle sessions alive with periodic pings,
+    and close or drain when the task finishes.
+  </Card>
+  <Card title="Core NATS" icon="document">
+    Publish, subscribe, queue groups, request/reply, headers, and binary-safe payloads
+    use a compact Ruby API.
+  </Card>
+  <Card title="JetStream" icon="open-book">
+    Manage streams and consumers, publish with acknowledgements, fetch pull-consumer
+    messages, and ack messages explicitly.
+  </Card>
+  <Card title="Examples First" icon="right-arrow">
+    The examples are the intended API shape. Keep them short and use them as the
+    starting point for supported workflows.
+  </Card>
+</CardGrid>
+
+## Read Next
+
+- [Getting Started](/nats-async/getting-started/)
+- [Examples](/nats-async/guides/examples/)
+- [Client Lifecycle](/nats-async/guides/client-lifecycle/)
+- [Core Messaging](/nats-async/guides/core-messaging/)
+- [JetStream](/nats-async/guides/jetstream/)

@@ -15,8 +15,9 @@ require "base64"
 require "openssl"
 
 module NatsAsync
-  class SimpleConnector
+  class Client
     CR_LF = "\r\n"
+    HEADER_LINE = "NATS/1.0"
 
     class AckError < StandardError; end
     class MsgAlreadyAcked < AckError; end
@@ -25,19 +26,34 @@ module NatsAsync
     class ResponseParseError < RequestError; end
     class ProtocolError < StandardError; end
 
+    class Headers < Hash
+      def self.wrap(values)
+        new.tap { |headers| values.each { |key, value| headers[key] = value } }
+      end
+
+      def [](key)
+        return super if key?(key)
+
+        match = keys.find { |existing| existing.to_s.casecmp?(key.to_s) }
+        match ? super(match) : nil
+      end
+    end
+
     class Message
       ACK = "+ACK"
       NAK = "-NAK"
       TERM = "+TERM"
       WPI = "+WPI"
 
-      attr_reader :subject, :sid, :reply, :data
+      attr_reader :subject, :sid, :reply, :data, :headers
+      alias header headers
 
-      def initialize(subject:, sid:, reply:, data:, connector:)
+      def initialize(subject:, sid:, reply:, data:, connector:, headers: {})
         @subject = subject
         @sid = sid
         @reply = reply
         @data = data
+        @headers = Headers.wrap(headers)
         @connector = connector
         @acked = false
       end
@@ -56,6 +72,14 @@ module NatsAsync
       def in_progress(timeout: nil, **_params)
         ensure_reply!
         publish_ack(WPI, timeout: timeout)
+      end
+
+      def ackable?
+        !reply.to_s.empty?
+      end
+
+      def acked?
+        @acked
       end
 
       def metadata
@@ -119,6 +143,8 @@ module NatsAsync
       url: "nats://127.0.0.1:4222",
       verbose: true,
       js_api_prefix: "$JS.API",
+      ping_interval: 30,
+      ping_timeout: 5,
       tls: nil,
       tls_verify: true,
       tls_ca_file: nil,
@@ -134,6 +160,8 @@ module NatsAsync
       @url = URI(url)
       @verbose = verbose
       @js_api_prefix = normalize_subject_prefix(js_api_prefix)
+      @ping_interval = ping_interval
+      @ping_timeout = ping_timeout
       @tls_enabled = tls.nil? ? %w[tls nats+tls].include?(@url.scheme) : tls
       @tls_verify = tls_verify
       @tls_ca_file = presence(tls_ca_file)
@@ -154,7 +182,10 @@ module NatsAsync
       @server_info = nil
 
       @read_task = nil
+      @ping_task = nil
       @read_error = nil
+      @started = false
+      @closed = true
       @write_lock = Async::Semaphore.new(1)
       @pong_condition = Async::Condition.new
       @sid_seq = 0
@@ -163,30 +194,87 @@ module NatsAsync
 
     attr_reader :received_pings, :received_pongs, :sent_pings, :server_info, :js_api_prefix
 
-    def run(duration: 10, ping_every: 2, ping_timeout: 2)
-      Async do |task|
-        connect!
-        read_initial_info!
-        send_connect!
+    def start(task:)
+      return self if connected?
 
-        @read_task = task.async { read_loop }
-        ping!(timeout: ping_timeout)
-        yield self, task if block_given?
+      connect!
+      read_initial_info!
+      send_connect!
+      @read_task = task.async { read_loop }
+      @started = true
+      @closed = false
+      ping!(timeout: @ping_timeout)
+      start_ping_loop(task)
+      self
+    rescue StandardError
+      stop
+      @started = false
+      @closed = true
+      raise
+    end
 
-        deadline = monotonic_now + duration
-        while monotonic_now < deadline
-          task.sleep(ping_every)
-          ping!(timeout: ping_timeout)
-        end
-      ensure
-        stop
-      end.wait
+    def close
+      return true if closed?
+
+      stop
+      @started = false
+      @closed = true
+      true
+    end
+
+    def resolve_backend(mode: :auto, stream: nil)
+      mode = mode.to_sym
+      return :core if mode == :core
+
+      raise ArgumentError, "stream is required for #{mode} backend" if stream.to_s.empty?
+
+      case mode
+      when :jetstream
+        jetstream.stream_info(stream)
+        :jetstream
+      when :auto
+        jetstream.stream_exists?(stream) ? :jetstream : :core
+      else
+        raise ArgumentError, "unsupported backend mode: #{mode.inspect}"
+      end
+    rescue JetStream::Error
+      raise if mode == :jetstream
+
+      :core
+    end
+
+    def drain(timeout: 5)
+      @ping_task&.stop
+      @ping_task = nil
+      flush(timeout: timeout) if connected?
+      true
+    ensure
+      close
     end
 
     def stop
+      @ping_task&.stop
       @read_task&.stop
       safe_close_stream
+      @ping_task = nil
       @read_task = nil
+    end
+
+    def flush(timeout: 2)
+      ping!(timeout: timeout)
+      true
+    end
+
+    def connected?
+      @started && !@closed && !@stream.nil?
+    end
+
+    def closed?
+      @closed
+    end
+
+    def last_error
+      @read_error
     end
 
     def ping!(timeout: 2)
@@ -200,8 +288,10 @@ module NatsAsync
       })
     end
 
-    def publish(subject, payload = "", reply: nil)
+    def publish(subject, payload = "", reply: nil, headers: nil)
       payload = payload.to_s
+      return publish_with_headers(subject, payload, headers, reply: reply) if headers && !headers.empty?
+
       command = build_pub_command(subject, payload.bytesize, reply: reply)
       @logger.debug("C->S #{command}")
 
@@ -230,20 +320,20 @@ module NatsAsync
       true
     end
 
-    def request(subject, payload = "", timeout: 0.5, parse_json: true)
-      response = request_message(subject, payload, timeout: timeout)
-      result = parse_json ? parse_json_response(subject, response.data) : response
+    def request(subject, payload = "", timeout: 0.5, parse_json: false, headers: nil)
+      response = request_message(subject, payload, timeout: timeout, headers: headers)
+      result = parse_json ? parse_json_response(subject, response.data) : response.data
       ensure_request_ok!(subject, result) if parse_json
       block_given? ? yield(result) : result
     end
 
-    def request_message(subject, payload = "", timeout: 0.5)
+    def request_message(subject, payload = "", timeout: 0.5, headers: nil)
       inbox = "_INBOX.#{rand(1 << 30)}.#{next_sid}"
       response = nil
       condition = Async::Condition.new
       on_response = ->(msg) { response = msg; condition.signal }
       with_temp_subscription(inbox, handler: on_response) do
-        publish(subject, request_payload(payload), reply: inbox)
+        publish(subject, request_payload(payload), reply: inbox, headers: headers)
         await(timeout: timeout, condition: condition, timeout_message: "request timeout after #{timeout}s", predicate: lambda {
           raise @read_error if @read_error
           !response.nil?
@@ -257,7 +347,28 @@ module NatsAsync
       [js_api_prefix, *tokens.flatten].compact.map(&:to_s).reject(&:empty?).join(".")
     end
 
+    def jetstream
+      @jetstream ||= JetStream.new(self)
+    end
+
     private
+
+    def start_ping_loop(task)
+      return unless @ping_interval && @ping_interval.positive?
+
+      @ping_task = task.async { |ping_task| ping_loop(ping_task) }
+    end
+
+    def ping_loop(task)
+      loop do
+        task.sleep(@ping_interval)
+        ping!(timeout: @ping_timeout)
+      end
+    rescue StandardError => e
+      @read_error ||= e
+      @logger.error("ping loop error: #{e.class}: #{e.message}")
+      safe_close_stream
+    end
 
     def connect!
       host = @url.host || "127.0.0.1"
@@ -286,6 +397,7 @@ module NatsAsync
         lang: "ruby",
         version: "nats-async-playground",
         protocol: 1,
+        headers: true,
         echo: true
       }
       payload.merge!(auth_connect_fields)
@@ -307,6 +419,8 @@ module NatsAsync
           raise ProtocolError, "server error: #{line}"
         when /\AINFO\s+/
           @server_info = parse_info_line(line)
+        when /\AHMSG\s+/
+          dispatch_hmsg(line)
         when /\AMSG\s+/
           dispatch_msg(line)
         end
@@ -390,17 +504,36 @@ module NatsAsync
       suffix = @stream.read_exactly(CR_LF.bytesize)
       raise ProtocolError, "malformed MSG payload ending: #{suffix.inspect}" unless suffix == CR_LF
 
-      msg = Message.new(subject: subject, sid: sid, reply: reply, data: payload, connector: self)
-      handler = @subscriptions[sid]
-      protocol_payload_in(payload)
-
-      if handler
-        handler.call(msg)
-      else
-        @logger.warn("no subscription handler for sid=#{sid}")
-      end
+      dispatch_message(Message.new(subject: subject, sid: sid, reply: reply, data: payload, connector: self))
     rescue StandardError => e
       @logger.error("message dispatch error: #{e.class}: #{e.message}")
+    end
+
+    def dispatch_hmsg(control_line)
+      subject, sid, reply, header_size, total_size = parse_hmsg_control_line(control_line)
+      raise ProtocolError, "HMSG header size exceeds total size" if header_size > total_size
+
+      data = @stream.read_exactly(total_size)
+      suffix = @stream.read_exactly(CR_LF.bytesize)
+      raise ProtocolError, "malformed HMSG payload ending: #{suffix.inspect}" unless suffix == CR_LF
+
+      header_block = data.byteslice(0, header_size) || +""
+      payload = data.byteslice(header_size, total_size - header_size) || +""
+      headers = parse_header_block(header_block)
+      dispatch_message(Message.new(subject: subject, sid: sid, reply: reply, data: payload, connector: self, headers: headers))
+    rescue StandardError => e
+      @logger.error("header message dispatch error: #{e.class}: #{e.message}")
+    end
+
+    def dispatch_message(message)
+      handler = @subscriptions[message.sid]
+      protocol_payload_in(message.data)
+
+      if handler
+        handler.call(message)
+      else
+        @logger.warn("no subscription handler for sid=#{message.sid}")
+      end
     end
 
     def parse_msg_control_line(control_line)
@@ -417,6 +550,80 @@ module NatsAsync
       end
     rescue ArgumentError => e
       raise ProtocolError, "invalid MSG control values: #{e.message}"
+    end
+
+    def parse_hmsg_control_line(control_line)
+      tokens = control_line.split(" ")
+      raise ProtocolError, "malformed HMSG line: #{control_line.inspect}" unless tokens.first == "HMSG"
+
+      case tokens.length
+      when 5
+        [tokens[1], Integer(tokens[2]), nil, Integer(tokens[3]), Integer(tokens[4])]
+      when 6
+        [tokens[1], Integer(tokens[2]), tokens[3], Integer(tokens[4]), Integer(tokens[5])]
+      else
+        raise ProtocolError, "unexpected HMSG control tokens: #{tokens.length}"
+      end
+    rescue ArgumentError => e
+      raise ProtocolError, "invalid HMSG control values: #{e.message}"
+    end
+
+    def publish_with_headers(subject, payload, headers, reply: nil)
+      header_block = build_header_block(headers)
+      command = build_hpub_command(subject, header_block.bytesize, header_block.bytesize + payload.bytesize, reply: reply)
+      @logger.debug("C->S #{command}")
+
+      @write_lock.acquire do
+        @stream.write("#{command}#{CR_LF}", flush: false)
+        @stream.write(header_block, flush: false)
+        @stream.write(payload, flush: false)
+        @stream.write(CR_LF, flush: true)
+      end
+      protocol_payload_out(payload)
+    end
+
+    def build_header_block(headers)
+      lines = [HEADER_LINE]
+      headers.each do |key, value|
+        header_name = validate_header_name(key)
+        Array(value).each do |item|
+          lines << "#{header_name}: #{validate_header_value(item)}"
+        end
+      end
+
+      "#{lines.join(CR_LF)}#{CR_LF}#{CR_LF}".b
+    end
+
+    def parse_header_block(block)
+      lines = block.split(CR_LF)
+      status = lines.shift
+      raise ProtocolError, "invalid header block status: #{status.inspect}" unless status&.start_with?(HEADER_LINE)
+
+      lines.each_with_object({}) do |line, headers|
+        next if line.empty?
+
+        key, value = line.split(":", 2)
+        raise ProtocolError, "malformed header line: #{line.inspect}" unless key && value
+
+        value = value.sub(/\A[ \t]/, "")
+        existing = headers[key]
+        headers[key] = existing ? Array(existing).push(value) : value
+      end
+    end
+
+    def validate_header_name(key)
+      name = key.to_s
+      raise ArgumentError, "header name cannot be empty" if name.empty?
+      raise ArgumentError, "invalid header name: #{name.inspect}" if name.match?(/[:\r\n]/)
+
+      name
+    end
+
+    def validate_header_value(value)
+      string = value.to_s
+      raise ArgumentError, "invalid header value: #{string.inspect}" if string.match?(/[\r\n]/)
+
+      string
     end
 
     def protocol_payload_out(payload)
@@ -440,6 +647,10 @@ module NatsAsync
 
     def build_pub_command(subject, size, reply: nil)
       reply ? "PUB #{subject} #{reply} #{size}" : "PUB #{subject} #{size}"
+    end
+
+    def build_hpub_command(subject, header_size, total_size, reply: nil)
+      reply ? "HPUB #{subject} #{reply} #{header_size} #{total_size}" : "HPUB #{subject} #{header_size} #{total_size}"
     end
 
     def nkey_connect_fields

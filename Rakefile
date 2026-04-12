@@ -25,6 +25,32 @@ task :readme do
   File.write("./README.md", renderer.result)
 end
 
+def npm_bin
+  return ENV["NPM_BIN"] if ENV["NPM_BIN"] && !ENV["NPM_BIN"].empty?
+
+  ENV["PATH"].to_s.split(File::PATH_SEPARATOR).each do |path|
+    candidate = File.join(path, "npm")
+    return candidate if File.executable?(candidate)
+  end
+
+  Dir[File.join(Dir.home, ".nvm/versions/node/*/bin/npm")].sort.last
+end
+
+namespace :docs do
+  desc "Run documentation development server"
+  task :dev do
+    npm = npm_bin
+    abort "npm was not found. Install Node.js or run with NPM_BIN=/path/to/npm." unless npm
+
+    npm_path = File.dirname(npm)
+    env = {"PATH" => [npm_path, ENV["PATH"]].compact.join(File::PATH_SEPARATOR)}
+
+    Dir.chdir("docs-site") do
+      exec env, npm, "run", "dev"
+    end
+  end
+end
+
 desc "Build&push new version"
 task push: %i[spec readme] do
   puts "Build&push new version"

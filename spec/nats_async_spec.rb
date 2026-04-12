@@ -7,7 +7,7 @@ describe NatsAsync do
   #   expect(NatsAsync::VERSION).to eq("0.1.0")
   # end
 
-  it "loads the simple connector" do
-    expect(NatsAsync::SimpleConnector).to be_a(Class)
+  it "loads the client" do
+    expect(NatsAsync::Client).to be_a(Class)
   end
 end
