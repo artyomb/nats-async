@@ -2,7 +2,7 @@
 
 module NatsAsync
   class JetStream
-    class Error < Client::RequestError
+    class Error < RequestError
       attr_reader :code, :err_code, :description
 
       def initialize(message, code: nil, err_code: nil, description: nil)
@@ -181,8 +181,8 @@ module NatsAsync
     end
 
     def publish(subject, payload = "", headers: nil, timeout: 2)
-      response = @client.request_message(subject, payload, timeout: timeout, headers: headers)
-      result = JSON.parse(response.data, symbolize_names: true)
+      message = @client.request(subject, payload, timeout: timeout, headers: headers).wait
+      result = JSON.parse(message.data, symbolize_names: true)
       raise_api_error(subject, result[:error]) if result[:error]
 
       PublishAck.new(stream: result[:stream], seq: result[:seq], duplicate: result[:duplicate])
@@ -212,8 +212,8 @@ module NatsAsync
     end
 
     def api_request_subject(subject, payload)
-      response = @client.request_message(subject, payload, timeout: 2)
-      result = JSON.parse(response.data, symbolize_names: true)
+      message = @client.request(subject, payload, timeout: 2).wait
+      result = JSON.parse(message.data, symbolize_names: true)
       raise_api_error(subject, result[:error]) if result[:error]
 
       result

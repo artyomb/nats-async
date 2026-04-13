@@ -34,6 +34,23 @@ client = NatsAsync::Client.new(
 
 Set `ping_interval: nil` when a test needs to disable the periodic loop.
 
+## Reconnect
+
+Reconnect is owned by `NatsAsync::Client`. A failed socket session is discarded, a fresh
+connection is created, and active subscriptions are replayed with their existing SIDs.
+In-flight requests are rejected on disconnect. Publishes and new requests fail while the
+client is disconnected or reconnecting; callers should retry explicitly when that is the
+right application behavior.
+
+```ruby
+client = NatsAsync::Client.new(
+  url: "nats://127.0.0.1:4222",
+  reconnect: true,
+  reconnect_interval: 1,
+  max_reconnect_attempts: nil
+)
+```
+
 ## Flush
 
 `client.flush(timeout:)` performs a `PING` / `PONG` round trip. Use it after publish calls
@@ -65,8 +82,12 @@ Current helpers:
 
 - `connected?`
 - `closed?`
+- `status`
 - `last_error`
 - `server_info`
 - `sent_pings`
 - `received_pongs`
 - `received_pings`
+
+`status` is one of `:closed`, `:connecting`, `:connected`, `:reconnecting`, or
+`:disconnected`.

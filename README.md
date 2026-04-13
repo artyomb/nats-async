@@ -1,6 +1,7 @@
 # Nats Async
+Published docs: <https://artyomb.github.io/nats-async/>
 
-`nats-async` packages the `nats-test` prototype as a Ruby gem that uses gem async.
+`nats-async` packages the `nats-test` prototype as a Ruby gem that uses Ruby Async.
 
 ## Installation
 

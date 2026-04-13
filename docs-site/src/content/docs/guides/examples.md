@@ -35,7 +35,8 @@ Source: [`examples/request_reply.rb`](https://github.com/artyomb/nats-async/blob
 bundle exec ruby examples/request_reply.rb
 ```
 
-Shows a service publishing to `message.reply` and a caller using `client.request`.
+Shows a service publishing to `message.reply`, async request callbacks, and a
+message-oriented request promise with `wait.data`.
 
 ## Headers and binary payloads
 

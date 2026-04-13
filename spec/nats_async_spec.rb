@@ -9,5 +9,8 @@ describe NatsAsync do
 
   it "loads the client" do
     expect(NatsAsync::Client).to be_a(Class)
+    expect(NatsAsync::Connection).to be_a(Class)
+    expect(NatsAsync::Message).to be_a(Class)
+    expect(NatsAsync::Error).to be < StandardError
   end
 end

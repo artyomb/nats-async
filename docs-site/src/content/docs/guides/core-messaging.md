@@ -47,20 +47,37 @@ end
 Caller side:
 
 ```ruby
-answer = client.request("math.double", "21", timeout: 1)
-puts answer
+promise = client.request("math.double", "21", timeout: 1)
+puts promise.wait.data
 ```
 
-`client.request` returns raw response data by default. Use `parse_json: true` only when
-the response is expected to be JSON:
+`client.request` always returns a `RequestPromise` immediately. The request is fulfilled
+from the existing client read loop when a reply arrives. The promise resolves to the full
+reply `Message`. Use `wait.data` when the current task only needs the response payload.
+
+Block form is also asynchronous. The block runs when the response arrives:
 
 ```ruby
-result = client.request("service.info", "", timeout: 1, parse_json: true)
+callback = client.request("math.double", "21", timeout: 1) do |message|
+  puts message.data
+end
+
+callback.wait(timeout: 1)
 ```
 
-Use `request_message` when headers, subject, or reply metadata are needed:
+Request callbacks run on one shared client callback task, not on a per-request task. Use
+the returned promise when the calling task needs to join that callback.
+
+Parse JSON from the response payload when the response is expected to be JSON:
 
 ```ruby
-message = client.request_message("service.info", "", timeout: 1)
+message = client.request("service.info", "", timeout: 1).wait
+result = JSON.parse(message.data, symbolize_names: true)
+```
+
+The same response object exposes headers, subject, and reply metadata:
+
+```ruby
+message = client.request("service.info", "", timeout: 1).wait
 puts message.headers["x-request-id"]
 ```

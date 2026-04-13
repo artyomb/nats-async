@@ -24,7 +24,10 @@ NatsAsync::Client.new(
   password: nil,
   nkey_seed: nil,
   nkey_seed_file: nil,
-  nkey_public_key: nil
+  nkey_public_key: nil,
+  reconnect: false,
+  reconnect_interval: 1,
+  max_reconnect_attempts: nil
 )
 ```
 
@@ -38,14 +41,19 @@ Lifecycle:
 - `connected?`
 - `closed?`
 - `last_error`
+- `status`
 
 Core messaging:
 
 - `publish(subject, payload = "", reply: nil, headers: nil)`
 - `subscribe(subject, queue: nil, handler: nil, &block)`
 - `unsubscribe(sid)`
-- `request(subject, payload = "", timeout: 0.5, parse_json: false, headers: nil)`
-- `request_message(subject, payload = "", timeout: 0.5, headers: nil)`
+- `request(subject, payload = "", timeout: 0.5, headers: nil, &block)`
+
+`request` returns `NatsAsync::Client::RequestPromise` immediately. If a block is given,
+the block is called asynchronously when the response arrives. The implementation is
+event-driven through the existing read loop, one shared request timeout loop, and one
+shared callback task. The promise resolves to the reply `NatsAsync::Message`.
 
 JetStream:
 
@@ -60,8 +68,42 @@ Operational fields:
 - `sent_pings`
 - `received_pongs`
 - `received_pings`
+- `status`
 
-## `NatsAsync::Client::Message`
+Connection statuses:
+
+- `:closed`
+- `:connecting`
+- `:connected`
+- `:reconnecting`
+- `:disconnected`
+
+## `NatsAsync::Client::RequestPromise`
+
+Returned from `client.request`.
+
+`wait` returns the reply `NatsAsync::Message` when fulfilled and raises the stored error when
+rejected. `value` returns the fulfilled message, returns `nil` while pending, and raises the
+stored error when rejected.
+
+Methods:
+
+- `id`
+- `status`
+- `pending?`
+- `fulfilled?`
+- `rejected?`
+- `wait(timeout: nil)`
+- `value`
+- `error`
+
+Statuses:
+
+- `:pending`
+- `:fulfilled`
+- `:rejected`
+
+## `NatsAsync::Message`
 
 Fields:
 
@@ -85,10 +127,11 @@ Ack methods:
 
 ## Errors
 
-- `NatsAsync::Client::AckError`
-- `NatsAsync::Client::MsgAlreadyAcked`
-- `NatsAsync::Client::NotAckable`
-- `NatsAsync::Client::RequestError`
-- `NatsAsync::Client::ResponseParseError`
-- `NatsAsync::Client::ProtocolError`
+- `NatsAsync::Error`
+- `NatsAsync::ConnectionError`
+- `NatsAsync::AckError`
+- `NatsAsync::MsgAlreadyAcked`
+- `NatsAsync::NotAckable`
+- `NatsAsync::RequestError`
+- `NatsAsync::ProtocolError`
 - `Timeout::Error`
