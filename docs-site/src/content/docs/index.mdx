@@ -16,6 +16,45 @@ hero:
 
 import { Card, CardGrid } from '@astrojs/starlight/components';
 
+## Positioning
+
+`nats-async` is an Async-native Ruby client for the NATS workflows used by this project:
+long-running listeners, Core publish/subscribe, queue groups, request/reply, headers,
+binary-safe payloads, JetStream management, JetStream publish acknowledgements, pull
+consumers, and explicit message acknowledgements.
+
+It is not a drop-in replacement for the official Ruby client. The official
+[`nats-pure`](https://github.com/nats-io/nats-pure.rb) gem is the mature general-purpose
+Ruby client from the NATS project. It is thread-safe, pure Ruby, supports Core NATS and
+JetStream, includes clustered reconnect hooks, TLS, WebSocket connections, service APIs,
+and the broader compatibility surface expected from an official client.
+
+This gem chooses a narrower shape. A `NatsAsync::Client` is started inside an `Async`
+task, owns background ping and request helper tasks, and exposes message objects directly.
+Reconnect is handled by the client by replacing the failed socket session and replaying
+subscriptions. Publishes and new requests fail while disconnected instead of being hidden
+inside an internal buffer.
+
+Use the official client when the application needs the broadest NATS Ruby feature set,
+cluster server discovery, WebSocket transport, service API support, mature reconnect
+hooks, or ecosystem-standard behavior. Use `nats-async` when the application is already
+built around `Async` tasks and needs a compact client surface with explicit lifecycle,
+headers, binary payloads, and JetStream pull-consumer workflows.
+
+## Quick Comparison
+
+| Area | `nats-async` | Official `nats-pure` |
+| --- | --- | --- |
+| Runtime model | Async task lifecycle | Thread-safe pure Ruby client |
+| Public entrypoint | `NatsAsync::Client` | `NATS.connect` |
+| Lifecycle | Explicit `start(task:)`, `flush`, `drain`, `close` | Connect, flush, close, reconnect callbacks |
+| Core messaging | Publish, subscribe, queue groups, request/reply | Publish, subscribe, queue groups, request/reply |
+| Headers | `headers:` on publish, parsed `message.headers` | Header-capable `NATS::Msg` request/reply and messages |
+| JetStream | Stream/consumer helpers, publish ack, pull fetch, message ack helpers | Mature JetStream publish and pull subscribe API |
+| Reconnect | Single-endpoint reconnect, subscription replay, no write buffering | Clustered reconnect options and lifecycle callbacks |
+| Transports | TCP and TLS | TCP, TLS, WebSocket |
+| Best fit | Async-first services that prefer explicit operational behavior | General Ruby NATS applications and official compatibility |
+
 ## What It Covers
 
 <CardGrid stagger>
