@@ -6,6 +6,7 @@ require "async/queue"
 ENV["CONSOLE_OUTPUT"] ||= "XTerm"
 require "console"
 require "json"
+require "securerandom"
 require "timeout"
 
 require_relative "connection"
@@ -75,7 +76,7 @@ module NatsAsync
         "#<#{self.class.name} id=#{id} status=#{status}>"
       end
 
-      alias inspect to_s
+      alias_method :inspect, :to_s
 
       private
 
@@ -153,6 +154,13 @@ module NatsAsync
       @subscriptions = {}
       @pending_requests = {}
       @pending_request_condition = Async::Condition.new
+
+      # Response multiplexing state
+      @resp_mux_prefix = nil
+      @resp_mux_subsid = nil
+      @resp_mux_lock = Async::Semaphore.new(1)
+      @resp_map = {}
+      @resp_map_lock = Async::Semaphore.new(1)
     end
 
     attr_reader :js_api_prefix, :status
@@ -227,12 +235,26 @@ module NatsAsync
       @request_callback_task&.stop
       @ping_task&.stop
       @reconnect_task&.stop
+      cleanup_resp_mux
       @connection.close
       @request_timeout_task = nil
       @request_callback_task = nil
       @request_callback_queue = nil
       @ping_task = nil
       @reconnect_task = nil
+    end
+
+    # Clean up the response multiplexing subscription
+    def cleanup_resp_mux
+      return unless @resp_mux_subsid
+
+      @resp_mux_lock.acquire do
+        @subscriptions.delete(@resp_mux_subsid)
+        safe_unsubscribe(@resp_mux_subsid)
+        @resp_mux_subsid = nil
+        @resp_mux_prefix = nil
+        @resp_map.clear
+      end
     end
 
     def flush(timeout: 2)
@@ -272,6 +294,53 @@ module NatsAsync
       sid
     end
 
+    # Ensure the response multiplexing subscription is set up
+    # Creates a single wildcard subscription to handle all request responses
+    def ensure_resp_mux_sub!(task:)
+      return if @resp_mux_prefix
+
+      @resp_mux_lock.acquire do
+        return if @resp_mux_prefix
+
+        # Generate unique prefix for this connection
+        @resp_mux_prefix = "_INBOX.#{SecureRandom.hex(8)}"
+
+        # Create wildcard subscription to handle all responses
+        # Messages for request replies come with subject = the reply inbox
+        @resp_mux_subsid = subscribe("#{@resp_mux_prefix}.*") do |msg|
+          # Extract token from subject (format: _INBOX.<prefix>.<token>)
+          token = msg.subject.split(".").last
+          process_mux_response(token, msg)
+        end
+      end
+
+      # Flush immediately to ensure subscription is registered before any requests
+      @connection.flush_pending
+      # The flush is async, so we just wait a tiny bit to ensure it's sent
+      sleep(0.001)
+    end
+
+    # Process a response message from the multiplexed subscription
+    def process_mux_response(token, message)
+      @resp_map_lock.acquire do
+        pending = @resp_map.delete(token)
+        return unless pending
+
+        if pending[:callback]
+          enqueue_request_callback(pending, message)
+        else
+          pending[:promise].fulfill(message)
+        end
+      rescue StandardError
+        @logger.error("mux response handler error")
+      end
+    end
+
+    # Generate a unique token for request tracking
+    def generate_resp_token
+      SecureRandom.hex(8)
+    end
+
     def unsubscribe(sid)
       @subscriptions.delete(sid)
       @connection.unsubscribe(sid)
@@ -288,13 +357,50 @@ module NatsAsync
 
     def request(subject, payload = "", timeout: 0.5, headers: nil, &block)
       ensure_connected!
+
+      # If block is provided, use old-style per-request subscription
+      if block
+        return request_old_style(subject, payload, timeout: timeout, headers: headers, &block)
+      end
+
+      # Use multiplexed subscription for promise-based requests
+      ensure_resp_mux_sub!(task: @reactor_task)
+      token = generate_resp_token
+      inbox = "#{@resp_mux_prefix}.#{token}"
+
+      promise = RequestPromise.new(id: token)
+
+      begin
+        # Track request with token-based lookup in mux response handler
+        @resp_map_lock.acquire do
+          @resp_map[token] = {
+            promise: promise,
+            deadline: monotonic_now + timeout,
+            timeout: timeout,
+            callback: nil
+          }
+        end
+        @pending_request_condition.signal
+
+        publish(subject, request_payload(payload), reply: inbox, headers: headers)
+        promise
+      rescue StandardError
+        @resp_map_lock.acquire do
+          @resp_map.delete(token)
+        end
+        raise
+      end
+    end
+
+    def request_old_style(subject, payload = "", timeout: 0.5, headers: nil, &block)
+      # Old-style request with per-request subscription (for callback support)
       request_id = next_request_id
       promise = RequestPromise.new(id: request_id)
       inbox = request_inbox(request_id)
       sid = nil
 
       sid = subscribe(inbox, handler: lambda { |message| complete_request(request_id, message) })
-      track_request(request_id, subject: subject, sid: sid, promise: promise, timeout: timeout, callback: callback)
+      track_request(request_id, subject: subject, sid: sid, promise: promise, timeout: timeout, callback: block)
       publish(subject, request_payload(payload), reply: inbox, headers: headers)
       promise
     rescue StandardError => e
@@ -312,7 +418,7 @@ module NatsAsync
     private
 
     def start_ping_loop(task)
-      return unless @ping_interval && @ping_interval.positive?
+      return unless @ping_interval&.positive?
 
       @ping_task = task.async { |ping_task| ping_loop(ping_task) }
     end
@@ -417,6 +523,7 @@ module NatsAsync
       @connection.start(task: @reactor_task || task)
       @connection.ping!(timeout: @ping_timeout)
       replay_subscriptions
+      reset_resp_mux # Reset mux on reconnect since prefix changes
       @read_error = nil
       @status = :connected
       true
@@ -424,7 +531,20 @@ module NatsAsync
 
     def replay_subscriptions
       @subscriptions.each do |sid, subscription|
+        # Skip the mux subscription - it will be re-created on first request
+        next if sid == @resp_mux_subsid
         @connection.subscribe(subscription[:subject], sid: sid, queue: subscription[:queue])
+      end
+    end
+
+    # Reset response multiplexing state after reconnect
+    def reset_resp_mux
+      @resp_mux_lock.acquire do
+        # Remove old mux subscription from tracking (don't UNSUB since socket is already closed)
+        @subscriptions.delete(@resp_mux_subsid) if @resp_mux_subsid
+        @resp_mux_subsid = nil
+        @resp_mux_prefix = nil
+        @resp_map.clear
       end
     end
 
@@ -501,24 +621,66 @@ module NatsAsync
 
     def expire_pending_requests
       now = monotonic_now
+
+      # Expire old-style requests from @pending_requests
       @pending_requests.each_key.to_a.each do |request_id|
         pending = @pending_requests[request_id]
         next unless pending && pending[:deadline] <= now
 
         reject_pending_request(request_id, Timeout::Error.new("request timeout after #{pending[:timeout]}s"), unsubscribe: true)
       end
+
+      # Expire mux-based requests from @resp_map
+      @resp_map_lock.acquire do
+        @resp_map.each_key.to_a.each do |token|
+          pending = @resp_map[token]
+          next unless pending && pending[:deadline] <= now
+
+          reject_mux_request(token, Timeout::Error.new("request timeout after #{pending[:timeout]}s"))
+          @resp_map.delete(token)
+        end
+      end
     end
 
     def next_request_timeout_interval
-      deadline = @pending_requests.values.map { |pending| pending[:deadline] }.min
-      return unless deadline
+      # Check both old-style and mux-based requests
+      deadlines = []
 
-      [deadline - monotonic_now, 0].max
+      @pending_requests.each_value do |pending|
+        next unless pending[:deadline]
+        deadlines << pending[:deadline]
+      end
+
+      @resp_map_lock.acquire do
+        @resp_map.each_value do |pending|
+          next unless pending[:deadline]
+          deadlines << pending[:deadline]
+        end
+      end
+
+      return unless deadlines.any?
+
+      [deadlines.min - monotonic_now, 0].max
+    end
+
+    def reject_mux_request(token, error)
+      pending = @resp_map[token]
+      return unless pending
+
+      pending[:promise].reject(error)
     end
 
     def reject_pending_requests(error)
       @pending_requests.each_key.to_a.each do |request_id|
         reject_pending_request(request_id, error, unsubscribe: false)
+      end
+
+      # Also reject mux-based requests
+      @resp_map_lock.acquire do
+        @resp_map.each_key.to_a.each do |token|
+          pending = @resp_map.delete(token)
+          pending[:promise].reject(error) if pending
+        end
       end
     end
 

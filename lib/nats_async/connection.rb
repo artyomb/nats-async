@@ -368,8 +368,12 @@ module NatsAsync
         stream.write("#{command}#{CR_LF}", flush: false)
         stream.write(header_block, flush: false)
         stream.write(payload, flush: false)
-        stream.write(CR_LF, flush: true)
+        stream.write(CR_LF, flush: false)
+        mark_pending_flush
       end
+
+      flush_pending if @pending_flush_count >= @flush_max_buffer
+
       protocol_payload_out(payload)
     end
 
