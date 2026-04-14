@@ -109,7 +109,9 @@ module NatsAsync
       nkey_public_key: nil,
       reconnect: false,
       reconnect_interval: 1,
-      max_reconnect_attempts: nil
+      max_reconnect_attempts: nil,
+      flush_delay: 0.01,
+      flush_max_buffer: 5000
     )
       @js_api_prefix = normalize_subject_prefix(js_api_prefix)
       @ping_interval = ping_interval
@@ -131,7 +133,9 @@ module NatsAsync
         password: password,
         nkey_seed: nkey_seed,
         nkey_seed_file: nkey_seed_file,
-        nkey_public_key: nkey_public_key
+        nkey_public_key: nkey_public_key,
+        flush_delay: flush_delay,
+        flush_max_buffer: flush_max_buffer
       }
       @connection = build_connection
 

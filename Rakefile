@@ -15,6 +15,12 @@ task :rspec do
   Rake::Task["spec"].invoke
 end
 
+desc "Run opt-in publishing benchmarks"
+task :benchmark do
+  env = {"BENCHMARK" => "1"}
+  system(env, "bundle", "exec", "rspec", "spec/benchmark_spec.rb", "--fail-fast") or exit 1
+end
+
 require "erb"
 
 desc "Update readme"
@@ -33,7 +39,7 @@ def npm_bin
     return candidate if File.executable?(candidate)
   end
 
-  Dir[File.join(Dir.home, ".nvm/versions/node/*/bin/npm")].sort.last
+  Dir[File.join(Dir.home, ".nvm/versions/node/*/bin/npm")].max
 end
 
 namespace :docs do
@@ -43,7 +49,7 @@ namespace :docs do
     abort "npm was not found. Install Node.js or run with NPM_BIN=/path/to/npm." unless npm
 
     npm_path = File.dirname(npm)
-    env = {"PATH" => [npm_path, ENV["PATH"]].compact.join(File::PATH_SEPARATOR)}
+    env = {"PATH" => [npm_path, ENV.fetch("PATH", nil)].compact.join(File::PATH_SEPARATOR)}
 
     Dir.chdir("docs-site") do
       exec env, npm, "run", "dev"

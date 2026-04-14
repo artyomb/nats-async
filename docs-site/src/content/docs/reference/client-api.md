@@ -14,6 +14,9 @@ NatsAsync::Client.new(
   js_api_prefix: "$JS.API",
   ping_interval: 30,
   ping_timeout: 5,
+  # Flush batching options
+  flush_delay: 0.01,        # Max time to buffer before flush (10ms default)
+  flush_max_buffer: 5000,   # Safety limit: flush if buffer exceeds this
   tls: nil,
   tls_verify: true,
   tls_ca_file: nil,

@@ -37,7 +37,9 @@ module NatsAsync
       nkey_public_key: nil,
       on_message: nil,
       on_error: nil,
-      on_info: nil
+      on_info: nil,
+      flush_delay: 0.01,
+      flush_max_buffer: 5000
     )
       @url = URI(url)
       @logger = logger
@@ -56,6 +58,9 @@ module NatsAsync
       @on_error = on_error || ->(_error) {}
       @on_info = on_info || ->(_info) {}
 
+      @flush_delay = flush_delay
+      @flush_max_buffer = flush_max_buffer
+
       @received_pings = 0
       @received_pongs = 0
       @sent_pings = 0
@@ -66,6 +71,8 @@ module NatsAsync
       @closed = true
       @write_lock = Async::Semaphore.new(1)
       @pong_condition = Async::Condition.new
+      @pending_flush_count = 0
+      @last_flush_time = Process.clock_gettime(Process::CLOCK_MONOTONIC)
     end
 
     def start(task:)
@@ -75,6 +82,7 @@ module NatsAsync
       read_initial_info!
       send_connect!
       @read_task = task.async { read_loop }
+      @stale_flush_task = task.async { stale_flush_loop }
       @closed = false
       self
     rescue StandardError
@@ -83,9 +91,12 @@ module NatsAsync
     end
 
     def close
+      flush_pending if @stream
+      @stale_flush_task&.stop
       @read_task&.stop
       safe_close_stream
       @read_task = nil
+      @stale_flush_task = nil
       @closed = true
       true
     end
@@ -115,8 +126,11 @@ module NatsAsync
       @write_lock.acquire do
         stream.write("#{command}#{CR_LF}", flush: false)
         stream.write(payload, flush: false)
-        stream.write(CR_LF, flush: true)
+        stream.write(CR_LF, flush: false)
+        mark_pending_flush
       end
+
+      flush_pending if @pending_flush_count >= @flush_max_buffer
       protocol_payload_out(payload)
     end
 
@@ -129,6 +143,23 @@ module NatsAsync
     def unsubscribe(sid)
       write_line("UNSUB #{sid}") if connected?
       true
+    end
+
+    def flush_pending
+      return unless @pending_flush_count&.positive?
+
+      @write_lock.acquire do
+        stream.write("", flush: true)
+        mark_flushed
+      end
+    end
+
+    def should_flush?
+      return false unless @pending_flush_count&.positive?
+      return true if @pending_flush_count >= @flush_max_buffer
+
+      now = monotonic_now
+      (now - @last_flush_time) >= @flush_delay
     end
 
     private
@@ -198,11 +229,30 @@ module NatsAsync
       @on_error.call(e)
     end
 
+    def stale_flush_loop
+      sleep(@flush_delay)
+
+      loop do
+        flush_pending if should_flush?
+        sleep(@flush_delay)
+      end
+    end
+
     def write_line(data)
       @write_lock.acquire do
         stream.write("#{data}#{CR_LF}", flush: true)
+        mark_flushed
       end
       @logger.debug("C->S #{data}")
+    end
+
+    def mark_pending_flush
+      @pending_flush_count += 1
+    end
+
+    def mark_flushed
+      @pending_flush_count = 0
+      @last_flush_time = monotonic_now
     end
 
     def read_line

@@ -28,7 +28,14 @@ export default defineConfig({
             { label: 'Client Lifecycle', slug: 'guides/client-lifecycle' },
             { label: 'Core Messaging', slug: 'guides/core-messaging' },
             { label: 'Headers And Binary', slug: 'guides/headers-and-binary' },
-            { label: 'JetStream', slug: 'guides/jetstream' }
+            { label: 'JetStream', slug: 'guides/jetstream' },
+            {
+              label: 'Performance',
+              items: [
+                { label: 'Overview', slug: 'guides/performance' },
+                { label: 'Flush Batching', slug: 'guides/flush-batching' }
+              ]
+            }
           ]
         },
         {
