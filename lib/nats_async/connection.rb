@@ -394,7 +394,9 @@ module NatsAsync
       status = lines.shift
       raise ProtocolError, "invalid header block status: #{status.inspect}" unless status&.start_with?(HEADER_LINE)
 
-      lines.each_with_object({}) do |line, headers|
+      headers = parse_header_status(status)
+
+      lines.each do |line|
         next if line.empty?
 
         key, value = line.split(":", 2)
@@ -404,6 +406,18 @@ module NatsAsync
         existing = headers[key]
         headers[key] = existing ? Array(existing).push(value) : value
       end
+
+      headers
+    end
+
+    def parse_header_status(status)
+      headers = {}
+      match = status.match(/\ANATS\/1\.0(?:\s+(\d{3}))?(?:\s+(.*))?\z/)
+      return headers unless match
+
+      headers["Status"] = match[1] if match[1] && !match[1].empty?
+      headers["Description"] = match[2] if match[2] && !match[2].empty?
+      headers
     end
 
     def validate_header_name(key)

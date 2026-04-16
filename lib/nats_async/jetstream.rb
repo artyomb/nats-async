@@ -160,6 +160,8 @@ module NatsAsync
 
     def add_consumer(stream, config = nil, **options)
       config = merge_config(config, options)
+      config[:ack_wait] = seconds_to_nanoseconds(config[:ack_wait]) if config[:ack_wait]
+      config[:inactive_threshold] = seconds_to_nanoseconds(config[:inactive_threshold]) if config[:inactive_threshold]
       consumer = consumer_name(config)
       subject = consumer ? @client.js_api_subject("CONSUMER.CREATE", stream, consumer) : @client.js_api_subject("CONSUMER.CREATE", stream)
       api_request_subject(subject, {stream_name: stream, config: config})
@@ -244,6 +246,10 @@ module NatsAsync
 
     def merge_config(config, options)
       (config || {}).transform_keys(&:to_sym).merge(options)
+    end
+
+    def seconds_to_nanoseconds(value)
+      (value.to_f * 1_000_000_000).to_i
     end
 
     def consumer_name(config)
