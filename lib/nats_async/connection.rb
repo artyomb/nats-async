@@ -316,8 +316,8 @@ module NatsAsync
 
       header_block = data.byteslice(0, header_size) || +""
       payload = data.byteslice(header_size, total_size - header_size) || +""
-      headers = parse_header_block(header_block)
-      dispatch_message(Message.new(subject: subject, sid: sid, reply: reply, data: payload, connector: self, headers: headers))
+      status, description, headers = parse_header_block(header_block)
+      dispatch_message(Message.new(subject: subject, sid: sid, reply: reply, data: payload, connector: self, headers: headers, status: status, description: description))
     rescue StandardError => e
       @logger.error("header message dispatch error: #{e.class}: #{e.message}")
     end
@@ -391,10 +391,11 @@ module NatsAsync
 
     def parse_header_block(block)
       lines = block.split(CR_LF)
-      status = lines.shift
-      raise ProtocolError, "invalid header block status: #{status.inspect}" unless status&.start_with?(HEADER_LINE)
+      status_line = lines.shift
+      raise ProtocolError, "invalid header block status: #{status_line.inspect}" unless status_line&.start_with?(HEADER_LINE)
 
-      headers = parse_header_status(status)
+      status, description = parse_header_status(status_line)
+      headers = {}
 
       lines.each do |line|
         next if line.empty?
@@ -407,17 +408,14 @@ module NatsAsync
         headers[key] = existing ? Array(existing).push(value) : value
       end
 
-      headers
+      [status, description, headers]
     end
 
     def parse_header_status(status)
-      headers = {}
       match = status.match(/\ANATS\/1\.0(?:\s+(\d{3}))?(?:\s+(.*))?\z/)
-      return headers unless match
+      return [nil, nil] unless match
 
-      headers["Status"] = match[1] if match[1] && !match[1].empty?
-      headers["Description"] = match[2] if match[2] && !match[2].empty?
-      headers
+      [match[1], match[2]]
     end
 
     def validate_header_name(key)

@@ -22,15 +22,17 @@ module NatsAsync
     TERM = "+TERM"
     WPI = "+WPI"
 
-    attr_reader :subject, :sid, :reply, :data, :headers
+    attr_reader :subject, :sid, :reply, :data, :headers, :status, :description
     alias header headers
 
-    def initialize(subject:, sid:, reply:, data:, connector:, headers: {})
+    def initialize(subject:, sid:, reply:, data:, connector:, headers: {}, status: nil, description: nil)
       @subject = subject
       @sid = sid
       @reply = reply
       @data = data
       @headers = Headers.wrap(headers)
+      @status = status
+      @description = description
       @connector = connector
       @acked = false
     end

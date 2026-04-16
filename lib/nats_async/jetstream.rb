@@ -34,14 +34,18 @@ module NatsAsync
       def fetch(batch: 1, timeout: 1)
         @messages = []
         @done = false
+        @error = nil
         @batch = batch
         @condition = Async::Condition.new
 
         @client.publish(next_subject, JSON.generate({batch: batch, expires: seconds_to_nanoseconds(timeout)}), reply: @inbox)
         wait_for_messages(timeout)
+        raise @error if @error
+
         @messages
       ensure
         @messages = nil
+        @error = nil
         @condition = nil
         @batch = nil
         @done = false
@@ -60,13 +64,20 @@ module NatsAsync
       def receive(message)
         return unless @condition
 
-        if status_message?(message)
+        case message.status
+        when nil, ""
+          @messages << message
+        when "404", "408"
           @done = true
         else
-          @messages << message
+          @error = Error.new(
+            "unexpected JetStream pull status #{message.status}: #{message.description}",
+            code: message.status.to_i,
+            description: message.description
+          )
         end
 
-        @condition.signal if @done || @messages.size >= @batch
+        @condition.signal if @error || @done || @messages.size >= @batch
       end
 
       def wait_for_messages(timeout)
@@ -82,10 +93,6 @@ module NatsAsync
             break
           end
         end
-      end
-
-      def status_message?(message)
-        !message.headers["Status"].to_s.empty?
       end
 
       def next_subject
@@ -160,8 +167,6 @@ module NatsAsync
 
     def add_consumer(stream, config = nil, **options)
       config = merge_config(config, options)
-      config[:ack_wait] = seconds_to_nanoseconds(config[:ack_wait]) if config[:ack_wait]
-      config[:inactive_threshold] = seconds_to_nanoseconds(config[:inactive_threshold]) if config[:inactive_threshold]
       consumer = consumer_name(config)
       subject = consumer ? @client.js_api_subject("CONSUMER.CREATE", stream, consumer) : @client.js_api_subject("CONSUMER.CREATE", stream)
       api_request_subject(subject, {stream_name: stream, config: config})
@@ -246,10 +251,6 @@ module NatsAsync
 
     def merge_config(config, options)
       (config || {}).transform_keys(&:to_sym).merge(options)
-    end
-
-    def seconds_to_nanoseconds(value)
-      (value.to_f * 1_000_000_000).to_i
     end
 
     def consumer_name(config)

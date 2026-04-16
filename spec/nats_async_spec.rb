@@ -15,19 +15,20 @@ describe NatsAsync do
   end
 
   describe NatsAsync::Connection do
-    it "parses status line into Status and Description headers" do
+    it "parses the header status line separately from headers" do
       connection = NatsAsync::Connection.allocate
       header_block = ["NATS/1.0 404 No Messages", "Nats-Subject: inference.jobs", "", ""].join("\r\n")
-      headers = connection.__send__(:parse_header_block, header_block)
+      status, description, headers = connection.__send__(:parse_header_block, header_block)
 
-      expect(headers["Status"]).to eq("404")
-      expect(headers["Description"]).to eq("No Messages")
+      expect(status).to eq("404")
+      expect(description).to eq("No Messages")
       expect(headers["Nats-Subject"]).to eq("inference.jobs")
+      expect(headers["Status"]).to be_nil
     end
   end
 
   describe NatsAsync::JetStream do
-    it "converts consumer duration fields to nanoseconds" do
+    it "passes consumer config through unchanged" do
       client = instance_double("NatsAsync::Client", js_api_subject: "$JS.API.CONSUMER.CREATE.jobs.worker")
       jetstream = NatsAsync::JetStream.new(client)
       captured = nil
@@ -39,8 +40,40 @@ describe NatsAsync do
       jetstream.add_consumer("jobs", durable_name: "worker", ack_wait: 60, inactive_threshold: 120)
 
       expect(captured[:stream_name]).to eq("jobs")
-      expect(captured[:config]).to include(durable_name: "worker", ack_wait: 60_000_000_000, inactive_threshold: 120_000_000_000)
+      expect(captured[:config]).to include(durable_name: "worker", ack_wait: 60, inactive_threshold: 120)
+    end
+
+    it "raises on unexpected pull status replies" do
+      handler = nil
+      client = instance_double(
+        NatsAsync::Client,
+        subscribe: 1,
+        js_api_subject: "$JS.API.CONSUMER.MSG.NEXT.jobs.worker"
+      )
+      allow(client).to receive(:subscribe) do |_subject, &block|
+        handler = block
+        1
+      end
+      allow(client).to receive(:publish) do
+        handler.call(
+          NatsAsync::Message.new(
+            subject: "_INBOX.test",
+            sid: 1,
+            reply: nil,
+            data: "",
+            connector: client,
+            status: "409",
+            description: "Consumer Deleted"
+          )
+        )
+      end
+
+      subscription = NatsAsync::JetStream::PullSubscription.new(client: client, stream: "jobs", consumer: "worker")
+      allow(subscription).to receive(:wait_for_messages)
+
+      expect {
+        subscription.fetch(batch: 1, timeout: 0.1)
+      }.to raise_error(NatsAsync::JetStream::Error, /unexpected JetStream pull status 409: Consumer Deleted/)
     end
   end
-
 end

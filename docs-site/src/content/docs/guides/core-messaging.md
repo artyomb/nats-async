@@ -81,3 +81,12 @@ The same response object exposes headers, subject, and reply metadata:
 message = client.request("service.info", "", timeout: 1).wait
 puts message.headers["x-request-id"]
 ```
+
+Header-capable protocol replies also expose status information separately from the
+header hash:
+
+```ruby
+message = client.request(subject, payload, timeout: 1).wait
+puts message.status
+puts message.description
+```

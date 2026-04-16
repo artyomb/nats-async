@@ -116,6 +116,11 @@ Fields:
 - `data`
 - `headers`
 - `header`
+- `status`
+- `description`
+
+`headers` contains actual NATS header fields. Protocol status lines from header-capable
+control replies are exposed separately as `status` and `description`.
 
 Ack methods:
 
